@@ -9,12 +9,13 @@ CARA PAKAI:
 -----------
 1. Siapkan folder dataset seperti ini:
 
+   known_faces/              ← foto registrasi dari main.py (dipakai DUA metode)
+   ├── bayu_anugrah_1.jpg
+   ├── bayu_anugrah_2.jpg
+   └── ...
+
    dataset/
-   ├── known_faces/          ← foto registrasi member kamu (sudah ada)
-   │   ├── bayu_anugrah_1.jpg
-   │   ├── bayu_anugrah_2.jpg
-   │   └── ...
-   ├── test/
+   ├── test/                 ← foto uji TERPISAH, jangan menyalin foto registrasi
    │   ├── normal/           ← foto test kondisi normal
    │   │   ├── bayu_anugrah.jpg   (nama file = face_label)
    │   │   ├── nama_member2.jpg
@@ -42,7 +43,7 @@ CARA PAKAI:
 =============================================================
 """
 
-import os
+import argparse
 import re
 import cv2
 import numpy as np
@@ -50,12 +51,14 @@ from pathlib import Path
 
 # ── Konfigurasi path ─────────────────────────────────────────────────────────
 BASE_DIR        = Path(__file__).resolve().parent
-KNOWN_FACES_DIR = BASE_DIR / "dataset" / "known_faces"
+# Gunakan folder yang sama dengan aplikasi utama (main.py). Dengan begitu
+# template/registrasi yang diuji oleh ORB dan DeepFace selalu identik.
+KNOWN_FACES_DIR = BASE_DIR / "known_faces"
 TEST_DIR        = BASE_DIR / "dataset" / "test"
 UNKNOWN_DIR     = BASE_DIR / "dataset" / "unknown"
 CASCADE_PATH    = BASE_DIR / "face_ref.xml"   # pakai punya kamu
 
-# ── Konstanta ORB (sama persis dengan main.py kamu) ──────────────────────────
+# ── Konstanta ORB untuk baseline pembanding ──────────────────────────────────
 FACE_IMAGE_SIZE             = (200, 200)
 LOW_LIGHT_MEAN_LIMIT        = 95
 LOW_LIGHT_TARGET_MEAN       = 125
@@ -76,7 +79,7 @@ MIN_TEMPLATE_ORB_SUPPORT    = 4
 CONDITIONS = ["normal", "low_light", "rotated"]
 
 # =============================================================================
-# PREPROCESSING (sama persis dengan main.py kamu)
+# PREPROCESSING ORB
 # =============================================================================
 
 def normalize_lighting(gray):
@@ -91,15 +94,12 @@ def preprocess_face(face_roi):
     resized = cv2.resize(face_roi, FACE_IMAGE_SIZE)
     return normalize_lighting(resized)
 
-def load_image_gray(path):
-    img = cv2.imread(str(path))
-    if img is None:
-        return None
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    return gray
+def load_image(path):
+    """Baca citra BGR sekali; kedua metode menerima citra yang sama."""
+    return cv2.imread(str(path), cv2.IMREAD_COLOR)
 
 # =============================================================================
-# ORB ENGINE (sama persis dengan main.py kamu)
+# ORB ENGINE (baseline pembanding)
 # =============================================================================
 
 orb     = cv2.ORB_create(nfeatures=700)
@@ -194,17 +194,31 @@ def recognize_orb(face_roi, known_faces):
 # DEEPFACE ENGINE
 # =============================================================================
 
+def create_deepface_embedding(image):
+    """Konfigurasi ini sama dengan create_embedding() di main.py."""
+    from deepface import DeepFace
+    result = DeepFace.represent(
+        img_path=image,
+        model_name="Facenet512",
+        detector_backend="skip",
+        enforce_detection=False,
+        align=False,
+    )
+    return np.asarray(result[0]["embedding"], dtype=np.float32)
+
+
 def load_known_faces_deepface():
     """Load dan embed semua known faces pakai Facenet512."""
-    from deepface import DeepFace
     faces = []
     for p in sorted(KNOWN_FACES_DIR.iterdir()):
         if p.suffix.lower() not in {".jpg", ".jpeg", ".png"}:
             continue
         try:
-            emb = DeepFace.represent(str(p), model_name="Facenet512",
-                                    enforce_detection=False)[0]["embedding"]
-            faces.append({"name": face_label_from_path(p), "embedding": np.array(emb)})
+            image = load_image(p)
+            if image is None:
+                raise ValueError("gambar tidak dapat dibaca")
+            emb = create_deepface_embedding(image)
+            faces.append({"name": face_label_from_path(p), "embedding": emb})
         except Exception as e:
             print(f"  [SKIP] {p.name}: {e}")
     return faces
@@ -216,13 +230,8 @@ def cosine_distance(a, b):
     return 1.0 - float(np.dot(a, b) / norm)
 
 def recognize_deepface(face_roi, known_faces, threshold=0.40):
-    from deepface import DeepFace
-    tmp_path = "/tmp/_eval_face_.jpg"
-    cv2.imwrite(tmp_path, cv2.resize(face_roi, (160, 160)))
     try:
-        emb = DeepFace.represent(tmp_path, model_name="Facenet512",
-                                enforce_detection=False)[0]["embedding"]
-        emb = np.array(emb)
+        emb = create_deepface_embedding(face_roi)
     except Exception:
         return "Unknown", 1.0
 
@@ -259,11 +268,14 @@ def evaluate(recognize_fn, known_faces, condition):
             continue
 
         gt_label = face_label_from_path(p)
-        gray     = load_image_gray(p)
-        if gray is None:
+        image = load_image(p)
+        if image is None:
             continue
 
-        pred_label, score = recognize_fn(gray, known_faces)
+        # ORB membutuhkan grayscale, sedangkan DeepFace memakai BGR. Keduanya
+        # berasal dari file/sampel uji yang sama; tidak ada data khusus metode.
+        method_input = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if recognize_fn is recognize_orb else image
+        pred_label, score = recognize_fn(method_input, known_faces)
         correct = (pred_label == gt_label)
 
         if correct and pred_label != "Unknown":
@@ -285,10 +297,11 @@ def evaluate(recognize_fn, known_faces, condition):
         for p in sorted(UNKNOWN_DIR.iterdir()):
             if p.suffix.lower() not in {".jpg", ".jpeg", ".png"}:
                 continue
-            gray = load_image_gray(p)
-            if gray is None:
+            image = load_image(p)
+            if image is None:
                 continue
-            pred_label, score = recognize_fn(gray, known_faces)
+            method_input = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if recognize_fn is recognize_orb else image
+            pred_label, score = recognize_fn(method_input, known_faces)
             if pred_label == "Unknown":
                 TN += 1
             else:
@@ -454,10 +467,36 @@ def run_all():
 # =============================================================================
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Bandingkan ORB dan DeepFace menggunakan data registrasi yang sama."
+    )
+    parser.add_argument(
+        "--known-faces-dir",
+        type=Path,
+        default=KNOWN_FACES_DIR,
+        help="Folder data registrasi bersama (default: ./known_faces).",
+    )
+    parser.add_argument(
+        "--test-dir",
+        type=Path,
+        default=TEST_DIR,
+        help="Folder data uji berisi normal/, low_light/, dan rotated/.",
+    )
+    parser.add_argument(
+        "--unknown-dir",
+        type=Path,
+        default=UNKNOWN_DIR,
+        help="Folder wajah non-member untuk mengukur false acceptance.",
+    )
+    args = parser.parse_args()
+    KNOWN_FACES_DIR = args.known_faces_dir.resolve()
+    TEST_DIR = args.test_dir.resolve()
+    UNKNOWN_DIR = args.unknown_dir.resolve()
+
     # Cek ketersediaan folder
     missing = []
     if not KNOWN_FACES_DIR.exists():
-        missing.append(f"dataset/known_faces/  ← copy folder known_faces kamu ke sini")
+        missing.append("known_faces/  ← daftar wajah hasil registrasi dari main.py")
     if not TEST_DIR.exists():
         missing.append(f"dataset/test/normal/, dataset/test/low_light/, dataset/test/rotated/  ← foto test kamu")
     if not CASCADE_PATH.exists():

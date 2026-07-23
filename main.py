@@ -14,6 +14,7 @@ import numpy as np
 BASE_DIR = Path(__file__).resolve().parent
 CASCADE_PATH = BASE_DIR / "face_ref.xml"
 KNOWN_FACES_DIR = BASE_DIR / "known_faces"
+EMBEDDINGS_PATH = BASE_DIR / "known_faces_embeddings.json"
 DEFAULT_API_URL = "http://127.0.0.1:8000/api/customers/register-face"
 DEFAULT_DETECTION_API_URL = "http://127.0.0.1:8000/api/customers/detect-member"
 COLOR_PRIMARY = (238, 112, 35)
@@ -30,26 +31,14 @@ COLOR_BLUE = COLOR_PRIMARY
 COLOR_BLUE_SOFT = COLOR_PRIMARY_SOFT
 
 face_ref = cv2.CascadeClassifier(str(CASCADE_PATH))
-orb = cv2.ORB_create(nfeatures=700)
-matcher = cv2.BFMatcher(cv2.NORM_HAMMING)
 LAST_MEMBER_NOTIFICATION = {"label": None, "sent_at": 0.0}
 
-FACE_IMAGE_SIZE = (200, 200)
+FACENET_MODEL_NAME = "Facenet512"
+COSINE_DISTANCE_THRESHOLD = 0.40
+EMBEDDING_FILE_VERSION = 1
 LOW_LIGHT_MEAN_LIMIT = 95
 LOW_LIGHT_TARGET_MEAN = 125
 LOW_LIGHT_BRIGHTNESS_BONUS = 18
-ORB_DISTANCE_LIMIT = 60
-ORB_RATIO_TEST = 0.75
-MIN_GOOD_MATCHES = 18
-MIN_MATCH_MARGIN = 8
-MIN_MATCH_RATIO = 0.18
-LOW_FEATURE_DESCRIPTOR_LIMIT = 90
-LOW_FEATURE_MIN_GOOD_MATCHES = 12
-LOW_FEATURE_MIN_MATCH_MARGIN = 5
-LOW_FEATURE_MIN_MATCH_RATIO = 0.12
-MIN_TEMPLATE_SIMILARITY = 62
-MIN_TEMPLATE_MARGIN = 3
-MIN_TEMPLATE_ORB_SUPPORT = 4
 FACE_DETECTION_ANGLES = (0, -20, 20, -35, 35)
 FACE_DETECTION_IOU_LIMIT = 0.35
 REGISTER_SAMPLE_COUNT = 5
@@ -112,33 +101,151 @@ def face_label_from_path(image_path):
     return re.sub(r"_\d+$", "", image_path.stem)
 
 
-def load_known_faces():
-    known_faces = []
+def get_deepface():
+    """Import DeepFace only when recognition/embedding is actually needed."""
+    try:
+        from deepface import DeepFace
+    except ImportError as exc:
+        raise RuntimeError(
+            "DeepFace belum terpasang. Install dependency dengan: "
+            "pip install deepface tensorflow opencv-python numpy"
+        ) from exc
+    except Exception as exc:
+        raise RuntimeError(f"DeepFace gagal diinisialisasi: {exc}") from exc
+    return DeepFace
 
-    KNOWN_FACES_DIR.mkdir(exist_ok=True)
 
-    for image_path in sorted(KNOWN_FACES_DIR.iterdir()):
-        if image_path.suffix.lower() not in {".jpg", ".jpeg", ".png"}:
-            continue
+def create_embedding(face_image):
+    """Create one FaceNet512 embedding from a face crop (BGR OpenCV image)."""
+    if face_image is None or face_image.size == 0:
+        raise RuntimeError("Embedding tidak dapat dibuat: crop wajah kosong.")
 
-        image = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
+    try:
+        result = get_deepface().represent(
+            img_path=face_image,
+            model_name=FACENET_MODEL_NAME,
+            detector_backend="skip",
+            enforce_detection=False,
+            align=False,
+        )
+        if not result or "embedding" not in result[0]:
+            raise ValueError("DeepFace tidak mengembalikan embedding.")
+        embedding = np.asarray(result[0]["embedding"], dtype=np.float32)
+        if embedding.ndim != 1 or embedding.size == 0 or not np.all(np.isfinite(embedding)):
+            raise ValueError("Embedding FaceNet512 tidak valid.")
+        return embedding
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise RuntimeError(
+            "Model DeepFace FaceNet512 gagal dimuat atau embedding tidak dapat dibuat: "
+            f"{exc}"
+        ) from exc
+
+
+def load_embeddings_file():
+    """Read the local embedding index, returning None when it must be rebuilt."""
+    if not EMBEDDINGS_PATH.exists():
+        return None
+    try:
+        with EMBEDDINGS_PATH.open("r", encoding="utf-8") as file:
+            payload = json.load(file)
+        if (
+            payload.get("version") != EMBEDDING_FILE_VERSION
+            or payload.get("model_name") != FACENET_MODEL_NAME
+            or not isinstance(payload.get("samples"), list)
+        ):
+            return None
+        for sample in payload["samples"]:
+            if not isinstance(sample.get("label"), str) or not isinstance(sample.get("sample"), str):
+                return None
+            vector = np.asarray(sample.get("embedding"), dtype=np.float32)
+            if vector.ndim != 1 or vector.size == 0:
+                return None
+        return payload["samples"]
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+
+
+def embeddings_match_face_files(embeddings):
+    image_samples = {path.stem for path in list_known_face_files()}
+    embedded_samples = {item["sample"] for item in embeddings}
+    return image_samples == embedded_samples
+
+
+def rebuild_embeddings():
+    """Build a FaceNet512 embedding for every image in known_faces/."""
+    global KNOWN_FACES
+
+    image_paths = list_known_face_files()
+    if not image_paths:
+        KNOWN_FACES = []
+        payload = {
+            "version": EMBEDDING_FILE_VERSION,
+            "model_name": FACENET_MODEL_NAME,
+            "samples": [],
+        }
+        with EMBEDDINGS_PATH.open("w", encoding="utf-8") as file:
+            json.dump(payload, file, indent=2)
+        print("Folder known_faces kosong. Database embedding dikosongkan.")
+        return KNOWN_FACES
+
+    rebuilt = []
+    failures = []
+    for image_path in image_paths:
+        image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
         if image is None:
+            failures.append(f"{image_path.name} (gambar tidak dapat dibaca)")
             continue
-
-        image = preprocess_face(image)
-        keypoints, descriptors = orb.detectAndCompute(image, None)
-
-        known_faces.append(
+        try:
+            embedding = create_embedding(image)
+        except RuntimeError as exc:
+            failures.append(f"{image_path.name} ({exc})")
+            continue
+        rebuilt.append(
             {
                 "name": face_label_from_path(image_path),
                 "sample": image_path.stem,
-                "image": image,
-                "descriptors": descriptors,
-                "keypoint_count": len(keypoints),
+                "embedding": embedding,
             }
         )
 
-    return known_faces
+    if not rebuilt:
+        raise RuntimeError(
+            "Tidak ada embedding yang berhasil dibuat. " + "; ".join(failures)
+        )
+
+    payload = {
+        "version": EMBEDDING_FILE_VERSION,
+        "model_name": FACENET_MODEL_NAME,
+        "samples": [
+            {"label": item["name"], "sample": item["sample"], "embedding": item["embedding"].tolist()}
+            for item in rebuilt
+        ],
+    }
+    with EMBEDDINGS_PATH.open("w", encoding="utf-8") as file:
+        json.dump(payload, file)
+    KNOWN_FACES = rebuilt
+
+    if failures:
+        print("Sebagian sampel tidak dapat dibuat embedding-nya: " + "; ".join(failures))
+    print(f"Embedding {len(rebuilt)} sampel berhasil dibangun ulang.")
+    return KNOWN_FACES
+
+
+def load_known_faces(rebuild_if_needed=True):
+    global KNOWN_FACES
+    embeddings = load_embeddings_file()
+    if embeddings is None or not embeddings_match_face_files(embeddings):
+        if rebuild_if_needed:
+            return rebuild_embeddings()
+        return []
+
+    KNOWN_FACES = [
+        {"name": item["label"], "sample": item["sample"], "embedding": np.asarray(item["embedding"], dtype=np.float32)}
+        for item in embeddings
+    ]
+    return KNOWN_FACES
 
 
 def face_detection(frame):
@@ -243,111 +350,43 @@ def normalize_lighting(gray_image):
 
 
 def preprocess_face(face_roi):
-    resized_face = cv2.resize(face_roi, FACE_IMAGE_SIZE)
-    return normalize_lighting(resized_face)
+    """Legacy helper for Haar/registration display; recognition uses raw BGR crops."""
+    if len(face_roi.shape) == 3:
+        face_roi = cv2.cvtColor(face_roi, cv2.COLOR_BGR2GRAY)
+    return normalize_lighting(face_roi)
 
 
-def count_good_matches(source_descriptors, known_descriptors):
-    if source_descriptors is None:
-        return 0
-    if known_descriptors is None or len(known_descriptors) < 2:
-        return 0
-
-    knn_matches = matcher.knnMatch(source_descriptors, known_descriptors, k=2)
-    good_matches = [
-        first
-        for first, second in knn_matches
-        if first.distance < ORB_DISTANCE_LIMIT
-        and first.distance < ORB_RATIO_TEST * second.distance
-    ]
-    return len(good_matches)
-
-
-def template_similarity(source_face, known_face):
-    correlation = cv2.matchTemplate(source_face, known_face, cv2.TM_CCOEFF_NORMED)[0][0]
-    abs_similarity = 1.0 - (np.mean(cv2.absdiff(source_face, known_face)) / 255.0)
-    return max(0.0, ((correlation + 1.0) / 2.0) * 100.0, abs_similarity * 100.0)
+def cosine_distance(first_embedding, second_embedding):
+    first = np.asarray(first_embedding, dtype=np.float32)
+    second = np.asarray(second_embedding, dtype=np.float32)
+    denominator = float(np.linalg.norm(first) * np.linalg.norm(second))
+    if denominator == 0:
+        return 1.0
+    return float(1.0 - np.dot(first, second) / denominator)
 
 
 def recognize_face(face_roi):
-    normalized_face = preprocess_face(face_roi)
-    keypoints, descriptors = orb.detectAndCompute(normalized_face, None)
-
     if not KNOWN_FACES:
-        return "Unknown", 0
+        return "Unknown", 1.0
 
-    best_name = "Unknown"
-    best_combined_score = 0
-    best_orb_score = 0
-    best_template_score = 0
-    second_combined_score = 0
-    second_template_score = 0
-    descriptor_count = max(len(keypoints), 1)
-    scores_by_name = {}
-
+    camera_embedding = create_embedding(face_roi)
+    best_distance_by_name = {}
     for known_face in KNOWN_FACES:
-        face_name = known_face["name"]
-        orb_score = count_good_matches(descriptors, known_face["descriptors"])
-        template_score = template_similarity(normalized_face, known_face["image"])
-        combined_score = orb_score + int(max(0, template_score - 50) * 0.35)
-        current_score = scores_by_name.get(
-            face_name,
-            {
-                "combined": 0,
-                "orb": 0,
-                "template": 0,
-            },
-        )
-        if combined_score > current_score["combined"]:
-            scores_by_name[face_name] = {
-                "combined": combined_score,
-                "orb": orb_score,
-                "template": template_score,
-            }
+        distance = cosine_distance(camera_embedding, known_face["embedding"])
+        name = known_face["name"]
+        best_distance_by_name[name] = min(best_distance_by_name.get(name, 1.0), distance)
 
-    for face_name, score in scores_by_name.items():
-        if score["combined"] > best_combined_score:
-            second_combined_score = best_combined_score
-            second_template_score = best_template_score
-            best_combined_score = score["combined"]
-            best_orb_score = score["orb"]
-            best_template_score = score["template"]
-            best_name = face_name
-        elif score["combined"] > second_combined_score:
-            second_combined_score = score["combined"]
-            second_template_score = score["template"]
-
-    match_ratio = best_orb_score / descriptor_count
-    required_good_matches = MIN_GOOD_MATCHES
-    required_match_margin = MIN_MATCH_MARGIN
-    required_match_ratio = MIN_MATCH_RATIO
-    if descriptor_count < LOW_FEATURE_DESCRIPTOR_LIMIT:
-        required_good_matches = LOW_FEATURE_MIN_GOOD_MATCHES
-        required_match_margin = LOW_FEATURE_MIN_MATCH_MARGIN
-        required_match_ratio = LOW_FEATURE_MIN_MATCH_RATIO
-
-    orb_is_confident = (
-        best_orb_score >= required_good_matches
-        and best_combined_score - second_combined_score >= required_match_margin
-        and match_ratio >= required_match_ratio
-    )
-    template_is_confident = (
-        best_template_score >= MIN_TEMPLATE_SIMILARITY
-        and best_template_score - second_template_score >= MIN_TEMPLATE_MARGIN
-        and best_orb_score >= MIN_TEMPLATE_ORB_SUPPORT
-    )
-
-    if not orb_is_confident and not template_is_confident:
-        return "Unknown", best_combined_score
-
-    return best_name, best_combined_score
+    best_name, best_distance = min(best_distance_by_name.items(), key=lambda item: item[1])
+    if best_distance > COSINE_DISTANCE_THRESHOLD:
+        return "Unknown", best_distance
+    return best_name, best_distance
 
 
-KNOWN_FACES = load_known_faces()
+KNOWN_FACES = []
 
 
 def known_person_count():
-    return len({known_face["name"] for known_face in KNOWN_FACES})
+    return len({face_label_from_path(path) for path in list_known_face_files()})
 
 
 def save_face_locally(face_image, face_label):
@@ -373,7 +412,8 @@ def next_face_sample_path(face_label):
 def save_face_sample(face_image, face_label):
     KNOWN_FACES_DIR.mkdir(exist_ok=True)
     target_path = next_face_sample_path(face_label)
-    cv2.imwrite(str(target_path), face_image)
+    if not cv2.imwrite(str(target_path), face_image):
+        raise RuntimeError(f"Gagal menyimpan sampel wajah: {target_path}")
     return target_path
 
 
@@ -385,7 +425,7 @@ def collect_face_samples(camera, initial_gray_frame, initial_faces, face_label):
     selected_face = find_largest_face(initial_faces)
     if selected_face is not None and initial_gray_frame is not None:
         x, y, w, h = selected_face
-        samples.append(preprocess_face(initial_gray_frame[y : y + h, x : x + w]))
+        samples.append(cv2.cvtColor(initial_gray_frame[y : y + h, x : x + w], cv2.COLOR_GRAY2BGR))
         last_capture_at = time.time()
 
     while len(samples) < REGISTER_SAMPLE_COUNT:
@@ -407,7 +447,7 @@ def collect_face_samples(camera, initial_gray_frame, initial_faces, face_label):
             continue
 
         x, y, w, h = selected_face
-        samples.append(preprocess_face(gray_frame[y : y + h, x : x + w]))
+        samples.append(cv2.cvtColor(gray_frame[y : y + h, x : x + w], cv2.COLOR_GRAY2BGR))
         last_capture_at = time.time()
 
     saved_paths = [save_face_sample(sample, face_label) for sample in samples]
@@ -449,7 +489,8 @@ def delete_known_face(face_entry):
         except FileNotFoundError:
             pass
 
-    KNOWN_FACES = load_known_faces()
+    # Always keep the local index in sync after a customer is removed.
+    KNOWN_FACES = rebuild_embeddings()
 
 
 def image_to_base64(face_image):
@@ -495,7 +536,7 @@ def notify_member_detected(face_label, score, api_url=DEFAULT_DETECTION_API_URL)
             api_url,
             {
                 "face_label": face_label,
-                "score": int(score),
+                "score": round(float(score), 4),
             },
             timeout=1,
         )
@@ -636,7 +677,9 @@ def register_customer(name, phone, discount_percent, api_url, camera_index=0):
                 continue
 
             x, y, w, h = selected_face
-            face_roi = preprocess_face(gray_frame[y : y + h, x : x + w])
+            # Store a color crop. Haar detection uses gray_frame, while DeepFace
+            # receives this BGR crop with detector_backend="skip".
+            face_roi = frame[y : y + h, x : x + w].copy()
             saved_path = save_face_sample(face_roi, face_label)
             face_samples.append(face_roi)
             saved_paths.append(saved_path)
@@ -651,8 +694,13 @@ def register_customer(name, phone, discount_percent, api_url, camera_index=0):
                 status_message = "Capture minimal 1 sampel dulu."
                 continue
 
-            global KNOWN_FACES
-            KNOWN_FACES = load_known_faces()
+            try:
+                # New samples must be embedded before they can be recognized.
+                rebuild_embeddings()
+            except RuntimeError as exc:
+                status_message = "Embedding gagal dibuat. Lihat terminal."
+                print(f"Gagal memperbarui embedding: {exc}")
+                continue
             face_roi = face_samples[0]
 
             try:
@@ -680,6 +728,15 @@ def register_customer(name, phone, discount_percent, api_url, camera_index=0):
 
 
 def run_recognition(camera_index=0):
+    try:
+        load_known_faces(rebuild_if_needed=True)
+    except RuntimeError as exc:
+        print(f"Recognition tidak dapat dimulai: {exc}")
+        return
+
+    if not KNOWN_FACES:
+        print("Folder known_faces kosong. Register customer terlebih dahulu.")
+
     camera = open_camera(camera_index)
     window_name = "Pingkal Face Recognition"
     frame_count = 0
@@ -718,13 +775,17 @@ def run_recognition(camera_index=0):
             detections = []
 
             for x, y, w, h in faces:
-                face_roi = gray_frame[y : y + h, x : x + w]
-                label, score = recognize_face(face_roi)
+                face_roi = frame[y : y + h, x : x + w]
+                try:
+                    label, score = recognize_face(face_roi)
+                except RuntimeError as exc:
+                    print(f"Gagal mengenali wajah: {exc}")
+                    label, score = "Unknown", 1.0
                 detections.append((x, y, w, h, label, score))
 
         for x, y, w, h, label, score in detections:
             color = COLOR_BLUE if label != "Unknown" else (90, 90, 96)
-            text = f"{label} ({score})"
+            text = f"{label} ({score:.3f})"
 
             cv2.rectangle(frame, (x, y), (x + w, y + h), color, 3)
             cv2.putText(
@@ -812,8 +873,8 @@ def parse_args():
     default_index = default_camera_index()
     parser.add_argument(
         "--mode",
-        choices=["recognize", "register", "manage"],
-        help="recognize untuk deteksi wajah, register untuk simpan customer, manage untuk list/hapus data",
+        choices=["recognize", "register", "manage", "rebuild-embeddings"],
+        help="recognize, register, manage, atau rebuild-embeddings",
     )
     parser.add_argument("--name", help="Nama customer saat mode register")
     parser.add_argument("--phone", default="", help="Nomor telepon customer")
@@ -1413,6 +1474,13 @@ def main():
 
     if args.mode == "manage":
         show_member_data_list()
+        return
+
+    if args.mode == "rebuild-embeddings":
+        try:
+            rebuild_embeddings()
+        except RuntimeError as exc:
+            print(f"Gagal membangun ulang embedding: {exc}")
         return
 
     run_recognition(args.camera_index)

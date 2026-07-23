@@ -8,3 +8,4 @@ server.err.log
 
 known_faces/*
 !known_faces/.gitkeep
+known_faces_embeddings.json
