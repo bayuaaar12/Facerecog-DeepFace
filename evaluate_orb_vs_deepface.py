@@ -195,7 +195,10 @@ def recognize_orb(face_roi, known_faces):
 # =============================================================================
 
 def create_deepface_embedding(image):
-    """Konfigurasi ini sama dengan create_embedding() di main.py."""
+    """
+    # [AI/ML INFERENCE]
+    Konfigurasi ini sama dengan create_embedding() di main.py (Model Facenet512 512D).
+    """
     from deepface import DeepFace
     result = DeepFace.represent(
         img_path=image,
@@ -224,12 +227,21 @@ def load_known_faces_deepface():
     return faces
 
 def cosine_distance(a, b):
+    """
+    # [AI/ML INFERENCE]
+    Kalkulasi Cosine Distance antar vektor embedding.
+    """
     norm = np.linalg.norm(a) * np.linalg.norm(b)
     if norm == 0:
         return 1.0
     return 1.0 - float(np.dot(a, b) / norm)
 
 def recognize_deepface(face_roi, known_faces, threshold=0.40):
+    """
+    # [AI/ML INFERENCE]
+    Pengenalan DeepFace Facenet512.
+    Threshold default 0.40 mengacu pada rekomendasi DeepFace dan terbukti optimal pada hasil_evaluasi.txt.
+    """
     try:
         emb = create_deepface_embedding(face_roi)
     except Exception:

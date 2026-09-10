@@ -1,142 +1,157 @@
 # Face Recognition Kasir Pingkal
 
-Repository ini berisi aplikasi face recognition sederhana berbasis Python dan OpenCV untuk kebutuhan kasir/member. Aplikasi dapat:
+Repository ini berisi sistem **Face Recognition** berbasis Python, OpenCV, dan DeepFace (**FaceNet512**) untuk kebutuhan kasir/member Warung Pingkal. 
 
-- mendeteksi wajah dari kamera,
-- mengenali wajah dengan embedding DeepFace **FaceNet512** dan cosine distance,
-- mendaftarkan wajah customer baru,
-- mengirim data register/deteksi ke API Laravel lokal,
-- melihat dan menghapus data wajah yang tersimpan lokal.
+Sistem ini mendukung pengenalan wajah real-time, pendaftaran member baru, manajemen data biometrik lokal, integrasi API backend (Laravel), serta suite evaluasi performa komprehensif (DeepFace vs ORB hybrid).
 
-Data wajah tidak disertakan di repository. Folder `known_faces` sengaja hanya menyimpan `.gitkeep`, dan isi folder tersebut diabaikan oleh Git agar sampel wajah tidak ikut ter-upload.
+---
 
-## Requirements
+## 🚀 Fitur Utama
 
-- Python 3.9 atau lebih baru
-- Kamera/webcam
-- Paket Python:
-  - `opencv-python`
-  - `numpy`
-  - `deepface`
-  - `tensorflow`
+- **Real-time Face Recognition**: Deteksi dan identifikasi wajah dari kamera dengan model `FaceNet512` & Cosine Distance.
+- **Visual GUI / OpenCV UI**: Antarmuka visual intuitif untuk kasir (Recognize, Register Wajah, List Data Member, Hapus Data).
+- **ORB Hybrid Recognition**: Kombinasi feature matching ORB dengan DeepFace untuk pencarian cepat & akurat.
+- **Manajemen Embedding Otomatis**: Penyimpanan embedding lokal (`known_faces_embeddings.json`) yang diperbarui secara otomatis saat ada penambahan/penghapusan member.
+- **Integrasi API Backend**: Pengiriman event deteksi member & pendaftaran ke API server Laravel secara langsung.
+- **Comprehensive Evaluation Tools**: Evaluasi metrik (Accuracy, Precision, Recall, F1-Score), Leave-One-Out (LOO) Cross Validation, & Pairwise Similarity evaluation.
 
-## Setup
+---
 
-Clone repository, lalu masuk ke folder project:
+## 📁 Struktur Repository
 
+```text
+facerecog/
+├── api/                             # Handler & Endpoint API Backend
+├── api_client.py                    # Client HTTP untuk integrasi API Laravel
+├── config.py                        # Konfigurasi sistem & ambang batas (threshold)
+├── download_lfw_unknown.py          # Script download dataset LFW (wajah non-member)
+├── eval_deepface_loo.py             # Evaluasi Leave-One-Out (LOO) Cross-Validation
+├── evaluate_full_convergentai.py    # Suite evaluasi lengkap (Accuracy, Precision, Recall, F1)
+├── evaluate_orb_vs_deepface.py      # Script pembanding DeepFace vs ORB baseline
+├── evaluate_pairwise_convergentai.py # Evaluasi Pairwise similarity
+├── gui.py                           # Antarmuka Visual GUI & komponen OpenCV menu
+├── known_faces/                     # Folder sampel foto registrasi member (hanya .gitkeep di git)
+├── main.py                          # Entry point utama aplikasi (CLI & GUI launcher)
+├── orb_hybrid_realtime.py           # Engine pengenalan wajah hybrid (ORB + DeepFace)
+├── recognition.py                   # Core engine deteksi & pengenalan wajah
+├── storage.py                       # Manajemen dataset lokal & JSON embedding generator
+├── README.md                        # Dokumentasi repository
+└── LICENSE                          # Lisensi MIT
+```
+
+> **Catatan Keamanan Biometrik**: Folder `known_faces/` dan file `known_faces_embeddings.json` diabaikan oleh Git (`.gitignore`) untuk melindungi data biometrik sensitif customer.
+
+---
+
+## 🛠️ Setup & Instalasi
+
+### 1. Prasyarat
+- Python 3.9+
+- Webcam / Kamera
+- Koneksi Internet (pada pengujian pertama untuk mengunduh bobot pretrained DeepFace)
+
+### 2. Clone & Environment
 ```bash
 git clone https://github.com/bayuaaar12/facerecog.git
 cd facerecog
-```
 
-Buat dan aktifkan virtual environment:
-
-```bash
+# Buat virtual environment
 python3 -m venv venv
+
+# Aktivasi virtual environment
+# Linux/macOS:
 source venv/bin/activate
+# Windows:
+venv\Scripts\activate
 ```
 
-Install dependency:
-
+### 3. Install Dependency
 ```bash
-pip install deepface tensorflow opencv-python numpy
+pip install deepface tensorflow opencv-python numpy matplotlib requests
 ```
 
-## Cara Menjalankan
+---
 
-Jalankan menu visual:
+## 💻 Cara Menjalankan Aplikasi
 
+### 1. Visual GUI (Default Kasir Menu)
+Menjalankan menu antarmuka visual berbasis OpenCV untuk kasir:
 ```bash
 python main.py
 ```
 
-Jalankan mode pengenalan wajah langsung:
-
+### 2. Mode Recognition Direct
+Langsung mengaktifkan kamera untuk pengenalan wajah:
 ```bash
 python main.py --mode recognize
 ```
+- Menampilkan bounding box wajah, label nama member, dan skor kemiripan.
+- Nilai ambang batas (threshold) default cosine distance adalah `<= 0.40`. Di atas threshold ini akan terdeteksi sebagai `Unknown`.
 
-Recognition memakai Haar Cascade untuk mencari/crop wajah, lalu `DeepFace.represent()` dengan model `Facenet512`. Setiap embedding kamera dibandingkan dengan seluruh sampel customer memakai cosine distance. Customer dengan jarak terkecil akan dipilih bila nilainya `<= 0.40`; selain itu hasilnya `Unknown`.
-
-Register customer lewat argumen CLI:
-
+### 3. Mode Register Member via CLI
+Mendaftarkan member baru dengan parameter:
 ```bash
-python main.py --mode register --name "Nama Customer" --phone "08123456789" --discount 10
+python main.py --mode register --name "Budi Santoso" --phone "081234567890" --discount 10
 ```
 
-Buka menu manajemen data wajah:
+### 4. Mode Manajemen Data & Rebuild Embedding
+- Buka antarmuka manajemen member:
+  ```bash
+  python main.py --mode manage
+  ```
+- Membangun ulang file embedding (`known_faces_embeddings.json`):
+  ```bash
+  python main.py --mode rebuild-embeddings
+  ```
 
-```bash
-python main.py --mode manage
-```
-
-## Embedding FaceNet512
-
-Saat register, aplikasi menyimpan beberapa crop wajah berwarna di `known_faces/` dan otomatis membangun ulang `known_faces_embeddings.json`. File tersebut menyimpan embedding FaceNet512 serta label customer untuk setiap sampel. Bila data wajah dihapus, index embedding juga otomatis diperbarui.
-
-Jika file embedding belum ada, rusak, atau ada foto yang baru ditambahkan secara manual, aplikasi akan membangunnya kembali saat recognition dimulai. Anda juga dapat menjalankannya sendiri:
-
-```bash
-python main.py --mode rebuild-embeddings
-```
-
-Pastikan koneksi internet tersedia pada penggunaan pertama bila DeepFace perlu mengunduh bobot FaceNet512. Jika muncul pesan DeepFace belum terpasang, jalankan kembali perintah instalasi di atas.
-
-Jika kamera default tidak sesuai, gunakan opsi `--camera-index`:
-
+### 5. Memilih Kamera
+Jika menggunakan kamera eksternal/USB:
 ```bash
 python main.py --mode recognize --camera-index 1
 ```
 
-## Evaluasi ORB vs DeepFace
+---
 
-Gunakan `evaluate_orb_vs_deepface.py` untuk membandingkan baseline ORB dengan
-DeepFace FaceNet512. Kedua metode menggunakan **foto registrasi yang sama** dari
-`known_faces/` (folder yang juga dipakai `main.py`), sehingga tidak perlu membuat
-salinan data member untuk masing-masing metode.
+## 📊 Evaluasi Performa Model
 
-Siapkan foto uji yang berbeda dari foto registrasi:
+Repository ini menyertakan berbagai script pengujian metrik untuk pengujian ilmiah/skripsi/riset:
 
-```text
-dataset/
-├── test/
-│   ├── normal/
-│   ├── low_light/
-│   └── rotated/
-└── unknown/       # opsional: wajah non-member
-```
-
-Nama foto uji harus sesuai label registrasi, misalnya `bayu_anugrah_1.jpg`
-untuk member `bayu_anugrah`. Lalu jalankan:
-
+### 1. Evaluasi ORB vs DeepFace
+Membandingkan keakuratan baseline ORB dengan DeepFace FaceNet512:
 ```bash
-pip install matplotlib
 python evaluate_orb_vs_deepface.py
 ```
 
-Hasil metrik Accuracy, Precision, Recall, dan F1 akan disimpan pada
-`hasil_evaluasi.txt`, serta grafik pada `bar_chart_fig5.png`. Untuk lokasi data
-yang berbeda, gunakan `--known-faces-dir`, `--test-dir`, atau `--unknown-dir`.
-
-## Integrasi API
-
-Secara default aplikasi memakai endpoint lokal:
-
-- register face: `http://127.0.0.1:8000/api/customers/register-face`
-- detect member: `http://127.0.0.1:8000/api/customers/detect-member`
-
-Endpoint register dapat diganti dengan opsi:
-
+### 2. Full Benchmark (Accuracy, Precision, Recall, F1)
 ```bash
-python main.py --mode register --name "Nama Customer" --api-url "http://127.0.0.1:8000/api/customers/register-face"
+python evaluate_full_convergentai.py
 ```
 
-## Catatan Data Wajah
+### 3. Leave-One-Out (LOO) Cross Validation
+```bash
+python eval_deepface_loo.py
+```
 
-Sampel wajah yang dibuat aplikasi akan tersimpan di `known_faces/`, sedangkan embedding lokal tersimpan di `known_faces_embeddings.json`. Keduanya adalah data sensitif/biometrik dan sebaiknya tidak diunggah.
+### 4. Download Dataset Benchmark Non-Member (LFW)
+```bash
+python download_lfw_unknown.py
+```
 
-Untuk publikasi ke Zenodo atau GitHub, pastikan hanya kode, konfigurasi, dan file non-sensitif yang diunggah.
+---
 
-## License
+## 🔗 Integrasi Backend API
 
-Kode ini dirilis dengan lisensi MIT. Lihat file `LICENSE`.
+Secara default, aplikasi akan mengirimkan payload HTTP POST ke server backend Laravel:
+- **Register Face**: `http://127.0.0.1:8000/api/customers/register-face`
+- **Detect Member**: `http://127.0.0.1:8000/api/customers/detect-member`
+
+Custom URL API dapat disesuaikan via argumen:
+```bash
+python main.py --mode register --name "Nama Member" --api-url "http://192.168.1.100:8000/api/customers/register-face"
+```
+
+---
+
+## 📜 Lisensi
+
+Proyek ini dirilis di bawah lisensi [MIT](LICENSE).

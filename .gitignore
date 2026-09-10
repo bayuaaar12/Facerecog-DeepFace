@@ -9,3 +9,12 @@ server.err.log
 known_faces/*
 !known_faces/.gitkeep
 known_faces_embeddings.json
+
+.deepface/
+dataset/
+faceregog/
+Evaluate_pairwise
+*.docx
+*.png
+*.txt
+
