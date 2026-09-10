@@ -628,13 +628,13 @@ def show_member_data_list():
     selected = {"index": 0}
     scroll = {"offset": 0}
     confirm_delete = {"value": False}
-    status = {"text": "Pilih data untuk melihat atau hapus."}
+    status = {"text": "Gunakan Wheel Mouse, Panah ↑↓, atau Tombol Naek/Turun."}
     visible_rows = 7
     buttons = [
         {
             "label": "Hapus",
             "value": "delete",
-            "rect": (120, 555, 280, 610),
+            "rect": (120, 555, 240, 610),
             "color": COLOR_PRIMARY,
             "border": COLOR_PRIMARY,
             "text_color": (255, 255, 255),
@@ -642,14 +642,37 @@ def show_member_data_list():
         {
             "label": "Balik",
             "value": "back",
-            "rect": (440, 555, 600, 610),
+            "rect": (480, 555, 600, 610),
             "border": COLOR_BORDER,
             "text_color": COLOR_MUTED,
+        },
+        {
+            "label": "Naek",
+            "value": "scroll_up",
+            "rect": (610, 220, 665, 360),
+            "border": COLOR_BORDER,
+            "text_color": COLOR_PRIMARY,
+        },
+        {
+            "label": "Turun",
+            "value": "scroll_down",
+            "rect": (610, 385, 665, 525),
+            "border": COLOR_BORDER,
+            "text_color": COLOR_PRIMARY,
         },
     ]
     row_rects = []
 
-    def on_mouse(event, x, y, _flags, _params):
+    def on_mouse(event, x, y, flags, _params):
+        face_entries = list_known_face_entries()
+        if event == cv2.EVENT_MOUSEWHEEL:
+            if flags > 0:
+                selected["index"] = max(0, selected["index"] - 1)
+            elif flags < 0:
+                selected["index"] = min(max(0, len(face_entries) - 1), selected["index"] + 1)
+            confirm_delete["value"] = False
+            return
+
         if event != cv2.EVENT_LBUTTONDOWN:
             return
 
@@ -659,7 +682,7 @@ def show_member_data_list():
             confirm_delete["value"] = False
             return
 
-        if confirm_delete["value"] and 300 <= x <= 425 and 555 <= y <= 610:
+        if confirm_delete["value"] and 260 <= x <= 460 and 555 <= y <= 610:
             action["value"] = "confirm_delete"
             return
 
@@ -684,14 +707,16 @@ def show_member_data_list():
 
         canvas = np.full((640, 720, 3), COLOR_BG, dtype=np.uint8)
         draw_header(canvas, "Data Wajah", "List member yang tersimpan lokal.", 720)
-        draw_round_rect(canvas, (92, 124, 628, 625), COLOR_PANEL, 18, -1, COLOR_BORDER)
-        draw_status_chip(canvas, f"{len(face_entries)} orang", (120, 132, 250, 168), COLOR_ACCENT, COLOR_ACCENT_SOFT)
+        draw_round_rect(canvas, (92, 124, 680, 625), COLOR_PANEL, 18, -1, COLOR_BORDER)
+
+        count_text = f"{len(face_entries)} orang" if not face_entries else f"Item {selected['index'] + 1} / {len(face_entries)}"
+        draw_status_chip(canvas, count_text, (120, 132, 280, 168), COLOR_ACCENT, COLOR_ACCENT_SOFT)
         cv2.putText(
             canvas,
             status["text"],
             (120, 188),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.48,
+            0.44,
             COLOR_MUTED,
             1,
             cv2.LINE_AA,
@@ -713,7 +738,7 @@ def show_member_data_list():
             visible_entries = face_entries[scroll["offset"] : scroll["offset"] + visible_rows]
             for index, face_entry in enumerate(visible_entries):
                 row_y = 220 + index * 45
-                rect = (120, row_y, 600, row_y + 36)
+                rect = (120, row_y, 590, row_y + 36)
                 row_rects.append(rect)
                 absolute_index = scroll["offset"] + index
                 is_selected = absolute_index == selected["index"]
@@ -726,7 +751,7 @@ def show_member_data_list():
                     f"{absolute_index + 1}. {display_face_label(face_entry['label'])}",
                     (138, row_y + 24),
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    0.52,
+                    0.50,
                     text_color,
                     1,
                     cv2.LINE_AA,
@@ -734,7 +759,7 @@ def show_member_data_list():
                 cv2.putText(
                     canvas,
                     f"{len(face_entry['files'])} sampel",
-                    (435, row_y + 24),
+                    (445, row_y + 24),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.42,
                     COLOR_MUTED,
@@ -742,10 +767,22 @@ def show_member_data_list():
                     cv2.LINE_AA,
                 )
 
+            # Gambar visual Scrollbar di samping list
+            if len(face_entries) > visible_rows:
+                track_x1, track_y1, track_x2, track_y2 = 596, 220, 604, 525
+                draw_round_rect(canvas, (track_x1, track_y1, track_x2, track_y2), COLOR_SURFACE, 4, -1, COLOR_BORDER)
+                track_h = track_y2 - track_y1
+                thumb_h = max(25, int(track_h * (visible_rows / len(face_entries))))
+                max_scroll = len(face_entries) - visible_rows
+                scroll_ratio = scroll["offset"] / max_scroll if max_scroll > 0 else 0
+                thumb_y1 = track_y1 + int(scroll_ratio * (track_h - thumb_h))
+                thumb_y2 = thumb_y1 + thumb_h
+                draw_round_rect(canvas, (track_x1, thumb_y1, track_x2, thumb_y2), COLOR_PRIMARY, 4, -1, COLOR_PRIMARY)
+
         if confirm_delete["value"] and face_entries:
             selected_name = display_face_label(face_entries[selected["index"]]["label"])
-            draw_round_rect(canvas, (300, 555, 425, 610), COLOR_ACCENT, 15, -1, COLOR_ACCENT)
-            draw_centered_text(canvas, "Yakin", (362, 582), 0.58, (255, 255, 255), 1)
+            draw_round_rect(canvas, (260, 555, 460, 610), COLOR_ACCENT, 15, -1, COLOR_ACCENT)
+            draw_centered_text(canvas, "Yakin", (360, 582), 0.58, (255, 255, 255), 1)
             cv2.putText(
                 canvas,
                 f"Hapus {selected_name[:18]}?",
@@ -757,30 +794,63 @@ def show_member_data_list():
                 cv2.LINE_AA,
             )
         else:
-            draw_round_rect(canvas, (300, 555, 425, 610), COLOR_SURFACE, 15, -1, COLOR_BORDER)
-            draw_centered_text(canvas, "Pilih", (362, 582), 0.58, COLOR_MUTED, 1)
+            draw_round_rect(canvas, (260, 555, 460, 610), COLOR_SURFACE, 15, -1, COLOR_BORDER)
+            draw_centered_text(canvas, "Pilih", (360, 582), 0.58, COLOR_MUTED, 1)
 
         for button in buttons:
             draw_menu_button(canvas, button)
 
         cv2.imshow(window_name, canvas)
-        key = cv2.waitKey(30) & 0xFF
+        key = cv2.waitKey(30)
+        raw_key = key
+        char_key = key & 0xFF if key != -1 else -1
 
-        if key in (ord("q"), 27):
+        if char_key in (ord("q"), 27):
             action["value"] = "back"
             break
-        if key in (82, ord("w")) and face_entries:
+
+        # Up Key / 'w' / 'W'
+        if (raw_key in (2490368, 38, 82) or char_key in (ord("w"), ord("W"), 82)) and face_entries:
             selected["index"] = max(0, selected["index"] - 1)
             confirm_delete["value"] = False
             continue
-        if key in (84, ord("s")) and face_entries:
+
+        # Down Key / 's' / 'S'
+        if (raw_key in (2621440, 40, 84) or char_key in (ord("s"), ord("S"), 84)) and face_entries:
             selected["index"] = min(len(face_entries) - 1, selected["index"] + 1)
             confirm_delete["value"] = False
             continue
-        if key in (ord("d"), 127, 8):
+
+        # Page Up
+        if (raw_key in (2162688, 33) or char_key == 33) and face_entries:
+            selected["index"] = max(0, selected["index"] - visible_rows)
+            confirm_delete["value"] = False
+            continue
+
+        # Page Down
+        if (raw_key in (2228224, 34) or char_key == 34) and face_entries:
+            selected["index"] = min(len(face_entries) - 1, selected["index"] + visible_rows)
+            confirm_delete["value"] = False
+            continue
+
+        if char_key in (ord("d"), 127, 8):
             action["value"] = "delete"
-        if key in (13, ord("y")) and confirm_delete["value"]:
+        if char_key in (13, ord("y")) and confirm_delete["value"]:
             action["value"] = "confirm_delete"
+
+        if action["value"] == "scroll_up":
+            action["value"] = None
+            if face_entries:
+                selected["index"] = max(0, selected["index"] - 1)
+                confirm_delete["value"] = False
+            continue
+
+        if action["value"] == "scroll_down":
+            action["value"] = None
+            if face_entries:
+                selected["index"] = min(len(face_entries) - 1, selected["index"] + 1)
+                confirm_delete["value"] = False
+            continue
 
         if action["value"] == "delete":
             action["value"] = None
