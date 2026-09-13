@@ -16,6 +16,8 @@ from config import (
     REGISTER_SAMPLE_COUNT,
 )
 from recognition import (
+    MotionLivenessChallenge,
+    create_embedding,
     face_detection,
     find_largest_face,
     open_camera,
@@ -32,7 +34,13 @@ from storage import (
     save_face_sample,
     slugify,
 )
-from api_client import notify_member_detected, post_json
+from api_client import (
+    get_customer,
+    notify_member_detected,
+    post_json,
+    send_register_customer,
+    update_customer,
+)
 
 
 def prompt_int(label, default_value=0):
@@ -317,17 +325,25 @@ def register_customer(name, phone, discount_percent, api_url, camera_index=0):
                 continue
             face_roi = face_samples[0]
 
+            consent = input(
+                "Apakah customer telah menyetujui penyimpanan data wajah? ketik YA untuk lanjut: "
+            ).strip().upper() == "YA"
+            if not consent:
+                status_message = "Registrasi dibatalkan: persetujuan diperlukan."
+                print(status_message)
+                continue
+
             try:
-                response_payload = post_json(
+                embedding = create_embedding(face_roi).tolist()
+                response_payload = send_register_customer(
+                    name,
+                    phone,
+                    discount_percent,
+                    face_roi,
+                    face_label,
+                    embedding,
+                    consent,
                     api_url,
-                    {
-                        "name": name,
-                        "phone": phone,
-                        "discount_percent": discount_percent,
-                        "face_label": face_label,
-                        "face_image_base64": image_to_base64(face_roi),
-                    },
-                    timeout=3,
                 )
                 print("Customer berhasil dikirim ke Laravel.")
                 print(f"{len(saved_paths)} sampel wajah tersimpan lokal.")
@@ -355,6 +371,7 @@ def run_recognition(camera_index=0):
     window_name = "Pingkal Face Recognition"
     frame_count = 0
     detections = []
+    liveness = MotionLivenessChallenge()
     action = {"value": None}
     buttons = [
         {
@@ -395,9 +412,10 @@ def run_recognition(camera_index=0):
                 except RuntimeError as exc:
                     print(f"Gagal mengenali wajah: {exc}")
                     label, score = "Unknown", 1.0
-                detections.append((x, y, w, h, label, score))
+                liveness_passed = liveness.update((x, y, w, h))
+                detections.append((x, y, w, h, label, score, liveness_passed))
 
-        for x, y, w, h, label, score in detections:
+        for x, y, w, h, label, score, liveness_passed in detections:
             color = COLOR_BLUE if label != "Unknown" else (90, 90, 96)
             text = f"{label} ({score:.3f})"
 
@@ -413,7 +431,7 @@ def run_recognition(camera_index=0):
             )
 
             if label != "Unknown":
-                notify_member_detected(label, score)
+                notify_member_detected(label, score, liveness_passed)
 
         frame = cv2.copyMakeBorder(
             frame,
@@ -477,14 +495,14 @@ def run_recognition(camera_index=0):
     close_window(camera)
 
 
-def show_register_form(default_discount=0):
-    window_name = "Data Register"
+def show_customer_form(title, subtitle, default_discount=0, initial_values=None):
+    window_name = title
     selected = {"value": None}
     active_field = {"index": 0}
     values = {
-        "name": "",
-        "phone": "",
-        "discount": str(default_discount),
+        "name": (initial_values or {}).get("name", ""),
+        "phone": (initial_values or {}).get("phone", ""),
+        "discount": str((initial_values or {}).get("discount", default_discount)),
     }
     status = {"text": "Isi nama, lalu klik Mulai Register."}
     fields = [
@@ -545,7 +563,7 @@ def show_register_form(default_discount=0):
             break
 
         canvas = np.full((560, 720, 3), COLOR_BG, dtype=np.uint8)
-        draw_header(canvas, "Register Wajah", "Simpan data member dan wajah customer.", 720)
+        draw_header(canvas, title, subtitle, 720)
         draw_round_rect(canvas, (92, 124, 628, 530), COLOR_PANEL, 18, -1, COLOR_BORDER)
         draw_status_chip(canvas, "Form customer", (120, 132, 270, 168), COLOR_ACCENT, COLOR_ACCENT_SOFT)
         cv2.putText(
@@ -614,6 +632,14 @@ def show_register_form(default_discount=0):
     }
 
 
+def show_register_form(default_discount=0):
+    return show_customer_form(
+        "Register Wajah",
+        "Simpan data member dan wajah customer.",
+        default_discount,
+    )
+
+
 def row_at_position(rows, x, y):
     for index, rect in enumerate(rows):
         x1, y1, x2, y2 = rect
@@ -628,6 +654,7 @@ def show_member_data_list():
     selected = {"index": 0}
     scroll = {"offset": 0}
     confirm_delete = {"value": False}
+    member_details = {}
     status = {"text": "Gunakan Wheel Mouse, Panah ↑↓, atau Tombol Naek/Turun."}
     visible_rows = 7
     buttons = [
@@ -637,6 +664,14 @@ def show_member_data_list():
             "rect": (120, 555, 240, 610),
             "color": COLOR_PRIMARY,
             "border": COLOR_PRIMARY,
+            "text_color": (255, 255, 255),
+        },
+        {
+            "label": "Edit",
+            "value": "edit",
+            "rect": (250, 555, 370, 610),
+            "color": COLOR_ACCENT,
+            "border": COLOR_ACCENT,
             "text_color": (255, 255, 255),
         },
         {
@@ -690,6 +725,12 @@ def show_member_data_list():
 
     cv2.namedWindow(window_name, cv2.WINDOW_AUTOSIZE)
     cv2.setMouseCallback(window_name, on_mouse)
+
+    for face_entry in list_known_face_entries():
+        try:
+            member_details[face_entry["label"]] = get_customer(face_entry["label"])["customer"]
+        except (RuntimeError, KeyError):
+            pass
 
     while action["value"] != "back":
         if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:
@@ -746,9 +787,12 @@ def show_member_data_list():
                 border_color = COLOR_PRIMARY if is_selected else COLOR_BORDER
                 text_color = COLOR_PRIMARY if is_selected else COLOR_TEXT
                 draw_round_rect(canvas, rect, row_color, 10, -1, border_color)
+                customer = member_details.get(face_entry["label"], {})
+                display_name = customer.get("name", display_face_label(face_entry["label"]))
+                discount = customer.get("discount_percent")
                 cv2.putText(
                     canvas,
-                    f"{absolute_index + 1}. {display_face_label(face_entry['label'])}",
+                    f"{absolute_index + 1}. {display_name}",
                     (138, row_y + 24),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.50,
@@ -758,7 +802,7 @@ def show_member_data_list():
                 )
                 cv2.putText(
                     canvas,
-                    f"{len(face_entry['files'])} sampel",
+                    f"{discount}% | {len(face_entry['files'])} sampel" if discount is not None else f"{len(face_entry['files'])} sampel",
                     (445, row_y + 24),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.42,
@@ -835,6 +879,8 @@ def show_member_data_list():
 
         if char_key in (ord("d"), 127, 8):
             action["value"] = "delete"
+        if char_key in (ord("e"), ord("E")):
+            action["value"] = "edit"
         if char_key in (13, ord("y")) and confirm_delete["value"]:
             action["value"] = "confirm_delete"
 
@@ -859,6 +905,48 @@ def show_member_data_list():
                 continue
             confirm_delete["value"] = not confirm_delete["value"]
             status["text"] = "Klik Yakin atau tekan Enter untuk hapus." if confirm_delete["value"] else "Hapus dibatalkan."
+            continue
+
+        if action["value"] == "edit":
+            action["value"] = None
+            if not face_entries:
+                status["text"] = "Tidak ada data yang bisa diedit."
+                continue
+
+            entry = face_entries[selected["index"]]
+            try:
+                customer = get_customer(entry["label"])["customer"]
+            except (RuntimeError, KeyError) as exc:
+                status["text"] = "Data Laravel tidak ditemukan. Register ulang customer ini."
+                print(f"Gagal mengambil data customer: {exc}")
+                continue
+
+            edited = show_customer_form(
+                "Edit Member",
+                "Face label tidak dapat diubah agar wajah tetap cocok.",
+                customer.get("discount_percent", 0),
+                {
+                    "name": customer.get("name", ""),
+                    "phone": customer.get("phone") or "",
+                    "discount": customer.get("discount_percent", 0),
+                },
+            )
+            if edited is None:
+                status["text"] = "Edit dibatalkan."
+                continue
+
+            try:
+                response = update_customer(
+                    entry["label"],
+                    edited["name"],
+                    edited["phone"],
+                    edited["discount"],
+                )
+                member_details[entry["label"]] = response["customer"]
+                status["text"] = "Nama dan diskon member berhasil diperbarui."
+            except (RuntimeError, KeyError) as exc:
+                status["text"] = "Gagal menyimpan perubahan ke Laravel."
+                print(f"Gagal mengubah customer: {exc}")
             continue
 
         if action["value"] == "confirm_delete":

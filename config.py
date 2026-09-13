@@ -5,17 +5,22 @@ import warnings
 warnings.filterwarnings("ignore")
 
 import platform
+import os
 from pathlib import Path
+from dotenv import load_dotenv
 
 # Path Konfigurasi
 BASE_DIR = Path(__file__).resolve().parent
+load_dotenv(BASE_DIR / ".env")
 CASCADE_PATH = BASE_DIR / "face_ref.xml"
 KNOWN_FACES_DIR = BASE_DIR / "known_faces"
 EMBEDDINGS_PATH = BASE_DIR / "known_faces_embeddings.json"
 
 # API Endpoints Default
-DEFAULT_API_URL = "http://127.0.0.1:8000/api/customers/register-face"
-DEFAULT_DETECTION_API_URL = "http://127.0.0.1:8000/api/customers/detect-member"
+LARAVEL_BASE_URL = os.getenv("LARAVEL_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
+LARAVEL_API_KEY = os.getenv("LARAVEL_API_KEY", "")
+DEFAULT_API_URL = f"{LARAVEL_BASE_URL}/api/customers/register-face"
+DEFAULT_DETECTION_API_URL = f"{LARAVEL_BASE_URL}/api/customers/detect-member"
 
 # Palette Warna UI (BGR Format untuk OpenCV & RGB Hex untuk Tkinter)
 COLOR_PRIMARY = (238, 112, 35)

@@ -1,4 +1,6 @@
 import platform
+import time
+from collections import deque
 import cv2
 import numpy as np
 from config import (
@@ -13,6 +15,36 @@ from config import (
 )
 
 face_ref = cv2.CascadeClassifier(str(CASCADE_PATH))
+
+
+class MotionLivenessChallenge:
+    """Requires a small natural head movement before a member event is sent.
+
+    This blocks a perfectly static image but is not equivalent to a dedicated
+    anti-spoofing model. Keep manual cashier confirmation enabled.
+    """
+
+    def __init__(self, minimum_shift=12.0, window_seconds=2.0, valid_seconds=5.0):
+        self.minimum_shift = minimum_shift
+        self.window_seconds = window_seconds
+        self.valid_seconds = valid_seconds
+        self.positions = deque()
+        self.last_passed_at = 0.0
+
+    def update(self, face_box):
+        now = time.monotonic()
+        x, y, width, height = face_box
+        self.positions.append((now, x + width / 2.0, y + height / 2.0))
+        while self.positions and now - self.positions[0][0] > self.window_seconds:
+            self.positions.popleft()
+
+        if len(self.positions) >= 5:
+            xs = [position[1] for position in self.positions]
+            ys = [position[2] for position in self.positions]
+            if max(xs) - min(xs) >= self.minimum_shift or max(ys) - min(ys) >= self.minimum_shift:
+                self.last_passed_at = now
+
+        return now - self.last_passed_at <= self.valid_seconds
 
 
 def default_camera_index():
